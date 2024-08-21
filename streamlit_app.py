@@ -101,7 +101,6 @@ with col1:
         # Capture click events
         selected_points = plotly_events(fig)
 
-        st.plotly_chart(fig)
 
 # Cột bên phải: Hiển thị thông tin và hình ảnh của node khi nhấn
 with col2:

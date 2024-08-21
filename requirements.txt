@@ -6,3 +6,4 @@ networkx
 plotly
 streamlit_plotly_events
 scikit-learn
+openpyxl

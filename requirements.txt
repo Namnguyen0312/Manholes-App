@@ -5,4 +5,4 @@ streamlit-folium
 networkx
 plotly
 streamlit_plotly_events
-sklearn
+scikit-learn

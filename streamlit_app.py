@@ -186,6 +186,42 @@ def display_simulated_graph(G, T, df, image_cache, highlight_nodes=None):
     return m_simulation
 
 
+def search_nodes(search_input, G, df):
+    highlight_nodes = None
+    address_info = None
+
+    if search_input:
+        # Try to interpret the input as a node ID
+        try:
+            node_id = int(search_input)
+            if node_id in G.nodes:
+                address = G.nodes[node_id]['address']
+
+                # Find all nodes with the same address
+                matching_nodes = df[df['Address'] == address].index + 1
+                node_count = len(matching_nodes)
+                address_info = {
+                    'address': address,
+                    'node_count': node_count
+                }
+                highlight_nodes = set(matching_nodes)
+            else:
+                address_info = {"error": "Node ID not found."}
+        except ValueError:
+            # If input is not a valid integer, treat it as an address
+            search_query = search_input.lower()
+            matching_nodes = df[df['Address'].str.lower().str.contains(search_query)].index + 1
+            node_count = len(matching_nodes)
+            if node_count > 0:
+                address_info = {
+                    'address': search_input,
+                    'node_count': node_count
+                }
+            highlight_nodes = set(matching_nodes)
+
+    return highlight_nodes, address_info
+
+
 def main():
     df = load_data('paddle_output_all.xlsx')
     G = create_graph(df)
@@ -197,20 +233,22 @@ def main():
 
     map_type = st.selectbox("Choose map type", ["Real Map with Graph Overlay", "Simulated Graph"])
 
-    search_query = st.text_input("Search for address")
+    search_input = st.text_input("Search by Node ID or Address")
 
-    highlight_nodes = None
-    if search_query:
-        # Filter nodes that match the search query
-        search_query = search_query.lower()
-        matching_nodes = df[df['Address'].str.lower().str.contains(search_query)].index + 1
-        highlight_nodes = set(matching_nodes)
+    highlight_nodes, address_info = search_nodes(search_input, G, df)
+
+    if address_info:
+        if 'error' in address_info:
+            st.write(address_info['error'])
+        else:
+            st.write(f"Address: {address_info['address']}")
+            st.write(f"Number of nodes: {address_info['node_count']}")
 
     if map_type == "Real Map with Graph Overlay":
         m = display_real_map_with_graph(G, T, df, image_cache, highlight_nodes)
     elif map_type == "Simulated Graph":
         m = display_simulated_graph(G, T, df, image_cache, highlight_nodes)
 
-
 if __name__ == "__main__":
     main()
+

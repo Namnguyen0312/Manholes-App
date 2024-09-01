@@ -1,154 +1,216 @@
+import base64
+import io
+import os
+
 import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import folium_static
 import networkx as nx
-import plotly.graph_objects as go
-from streamlit_plotly_events import plotly_events
 from sklearn.neighbors import BallTree
 import numpy as np
+import osmnx as ox
+import random
+import matplotlib.pyplot as plt
+from matplotlib.colors import to_hex
+from PIL import Image
 
 # Set page configuration to use the full width of the browser window
 st.set_page_config(layout="wide")
 
-# Đọc dữ liệu từ file Excel
-df = pd.read_excel('paddle_output_all.xlsx')
 
-# Tạo ứng dụng Streamlit
-st.title("From multi_videos to map: case of manhole")
+# Utility function to create a thumbnail image
+def create_thumbnail(image_path, size=(100, 100)):
+    img = Image.open(image_path)
+    img.thumbnail(size)
+    with io.BytesIO() as buffer:
+        img.save(buffer, format="JPEG")
+        thumbnail_data = buffer.getvalue()
+    return thumbnail_data
 
-# Chia ứng dụng thành hai cột
-col1, col2 = st.columns([2, 1])  # Adjust proportions as needed
 
-# Cột bên trái: Chọn loại bản đồ và hiển thị
-with col1:
-    # Chọn loại bản đồ: Bản đồ thật hoặc Graph
-    map_type = st.selectbox("Chọn loại bản đồ", ["Bản đồ thật", "Graph mô phỏng"])
 
-    # Tạo một graph rỗng
+@st.cache_data
+def load_data(file_path):
+    return pd.read_excel(file_path)
+
+
+@st.cache_resource
+def create_graph(df, radius=500):
     G = nx.Graph()
-
-    # Thêm các node từ dữ liệu Latitude và Longitude
     for idx, row in df.iterrows():
-        node_id = idx + 1  # ID của node dựa trên chỉ số hàng
+        node_id = idx + 1
         G.add_node(node_id, pos=(row['Longitude'], row['Latitude']),
                    filename=row['Filename'], folder=row['Folder'], address=row['Address'])
 
-    # Slider để điều chỉnh ngưỡng khoảng cách giữa các node
-    threshold = st.slider("Chọn ngưỡng khoảng cách (m)", min_value=10, max_value=100, value=50, step=10)
-
-    # Lấy danh sách các vị trí từ node và chuyển đổi sang radians (cần thiết cho BallTree)
     positions = np.radians(np.array([G.nodes[node]['pos'][::-1] for node in G.nodes()]))
+    tree = BallTree(positions)
+    adjacency_list = tree.query_radius(positions, r=radius / 6371000, return_distance=True)
 
-    # Tạo BallTree và tìm các cặp node nằm trong khoảng cách ngưỡng (sử dụng Haversine distance)
-    tree = BallTree(positions, metric='haversine')
-    adjacency_list = tree.query_radius(positions, r=threshold / 6371000, return_distance=True)
-
-    # Thêm các cạnh vào graph dựa trên kết quả từ BallTree
     for i, neighbors in enumerate(adjacency_list[0]):
         for j, distance in zip(neighbors, adjacency_list[1][i]):
-            if i < j:  # Đảm bảo không thêm cạnh hai lần
-                G.add_edge(i + 1, j + 1, weight=distance * 6371000)  # Nhân lại với bán kính Trái đất để có khoảng cách thực tế
-
-    # Hiển thị bản đồ dựa trên lựa chọn của người dùng
-    if map_type == "Bản đồ thật":
-        # Tạo bản đồ với Folium
-        m = folium.Map(location=[df['Latitude'].mean(), df['Longitude'].mean()], zoom_start=15)
-
-        # Vẽ các node lên bản đồ và gán ID
-        for node_id in G.nodes:
-            pos = G.nodes[node_id]['pos']
-            address = G.nodes[node_id]['address']
-            folium.Marker(
-                [pos[1], pos[0]],  # Latitude, Longitude
-                popup=f"Node {node_id}: {address}",
-                tooltip=address
-            ).add_to(m)
-
-        # Hiển thị bản đồ
-        folium_static(m)
-
-    elif map_type == "Graph mô phỏng":
-        # Vẽ graph mô phỏng với Plotly
-        pos = nx.get_node_attributes(G, 'pos')
-
-        edge_x = []
-        edge_y = []
-        for edge in G.edges():
-            x0, y0 = pos[edge[0]]
-            x1, y1 = pos[edge[1]]
-            edge_x.append(x0)
-            edge_x.append(x1)
-            edge_y.append(y0)
-            edge_y.append(y1)
-            edge_x.append(None)
-            edge_y.append(None)
-
-        node_x = [pos[node][0] for node in G.nodes()]
-        node_y = [pos[node][1] for node in G.nodes()]
-
-        fig = go.Figure()
-
-        # Add edges
-        fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=2, color='#888')))
-
-        # Add nodes without displaying text
-        fig.add_trace(go.Scatter(x=node_x, y=node_y, mode='markers', marker=dict(size=10, color='lightblue'),
-                                 hoverinfo='text', text=[f'Node {node}' for node in G.nodes()]))
-
-        fig.update_layout(showlegend=False, title='Graph mô phỏng', xaxis_title='Longitude', yaxis_title='Latitude')
-
-        # Capture click events
-        selected_points = plotly_events(fig)
+            if i < j:
+                G.add_edge(i + 1, j + 1, weight=distance * 6371000)
+    return G
 
 
-# Cột bên phải: Hiển thị thông tin và hình ảnh của node khi nhấn
-with col2:
-    st.header("Thông tin Node")
-    if map_type == "Graph mô phỏng" and selected_points:
-        selected_node = int(selected_points[0].get('pointIndex', -1)) + 1  # +1 to match the node ID
+def generate_mst(G):
+    return nx.minimum_spanning_tree(G)
 
-        if selected_node in G.nodes:
-            node_data = G.nodes[selected_node]
-            st.write(f"**Địa chỉ**: {node_data['address']}")
-            image_path = f"{node_data['folder']}/{node_data['filename']}"
-            st.image(image_path)
+
+def add_nodes_and_edges_to_map(m, G, T, image_cache, highlight_nodes=None):
+    for node_id in T.nodes:
+        pos = G.nodes[node_id]['pos']
+        image_path = os.path.join(G.nodes[node_id]['folder'], G.nodes[node_id]['filename'])
+        thumbnail_data = create_thumbnail(image_path) if os.path.isfile(image_path) else None
+
+        if thumbnail_data:
+            img_base64 = base64.b64encode(thumbnail_data).decode()
+            popup_html = f"""
+            <div>
+                <strong>Node {node_id}</strong><br>
+                {G.nodes[node_id]['address']}<br>
+                <img src="data:image/jpeg;base64,{img_base64}" alt="Node Image" style="width:100%;"/>
+            </div>
+            """
         else:
-            st.write("Không có node nào được chọn!")
+            popup_html = f"""
+            <div>
+                <strong>Node {node_id}</strong><br>
+                {G.nodes[node_id]['address']}<br>
+                <em>No image available</em>
+            </div>
+            """
 
-# Chức năng tìm kiếm số lượng node thuộc một con đường nào đó
-st.header("Tìm kiếm theo tên đường")
-search_road = st.text_input("Nhập tên đường")
+        color = 'red' if highlight_nodes is None or node_id in highlight_nodes else 'gray'
+        fill_color = 'blue' if highlight_nodes is None or node_id in highlight_nodes else 'lightgray'
 
-if search_road:
-    matching_nodes = [node_id for node_id in G.nodes if search_road.lower() in G.nodes[node_id]['address'].lower()]
-    node_count = len(matching_nodes)
-    st.write(f"Số lượng node trên đường '{search_road}': {node_count}")
+        folium.CircleMarker(
+            location=(pos[1], pos[0]),
+            radius=5, color=color, fill=True, fill_color=fill_color,
+            popup=folium.Popup(popup_html, max_width=300)
+        ).add_to(m)
 
-    if node_count > 0:
-        if map_type == "Bản đồ thật":
-            m_search = folium.Map(location=[df['Latitude'].mean(), df['Longitude'].mean()], zoom_start=15)
-            for node_id in matching_nodes:
-                pos = G.nodes[node_id]['pos']
-                address = G.nodes[node_id]['address']
-                folium.Marker(
-                    [pos[1], pos[0]],  # Latitude, Longitude
-                    popup=f"Node {node_id}: {address}",
-                    tooltip=address,
-                    icon=folium.Icon(color='red')
-                ).add_to(m_search)
-            folium_static(m_search)
+    for edge in T.edges:
+        pos1 = G.nodes[edge[0]]['pos']
+        pos2 = G.nodes[edge[1]]['pos']
+        color = 'green' if highlight_nodes is None or (edge[0] in highlight_nodes and edge[1] in highlight_nodes) else 'lightgray'
+        folium.PolyLine(
+            locations=[(pos1[1], pos1[0]), (pos2[1], pos2[0])],
+            color=color,
+            weight=4
+        ).add_to(m)
 
-        elif map_type == "Graph mô phỏng":
-            # Highlight the matching nodes in red
-            for node_id in G.nodes:
-                if node_id in matching_nodes:
-                    fig.add_trace(go.Scatter(
-                        x=[pos[node_id][0]], y=[pos[node_id][1]],
-                        mode='markers',
-                        marker=dict(size=12, color='red'),
-                        text=[f'Node {node_id}'],
-                        textposition='top center'
-                    ))
 
-            st.plotly_chart(fig)
+def display_real_map_with_graph(G, T, df, image_cache, highlight_nodes=None):
+    m = folium.Map(location=[df['Latitude'].mean(), df['Longitude'].mean()], zoom_start=15)
+
+    # Add the street network overlay
+    latitude, longitude = df['Latitude'].mean(), df['Longitude'].mean()
+    radius = 1000  # meters
+    G_street = ox.graph_from_point((latitude, longitude), dist=radius, network_type='drive')
+    nodes, edges = ox.graph_to_gdfs(G_street)
+    edges['name'] = edges['name'].apply(lambda x: ', '.join(x) if isinstance(x, list) else str(x))
+
+    color_map = {}
+    road_midpoints = {}
+
+    for idx, row in edges.iterrows():
+        road_name = row.get('name', 'Unnamed Road')
+        color = 'blue'
+        folium.PolyLine(
+            locations=[(point[1], point[0]) for point in row['geometry'].coords],
+            color=color,
+            weight=2
+        ).add_to(m)
+        if road_name != 'Unnamed Road':
+            if road_name not in road_midpoints or row['geometry'].length > road_midpoints[road_name][1]:
+                mid_point = row['geometry'].interpolate(0.5, normalized=True).coords[0]
+                road_midpoints[road_name] = (mid_point, row['geometry'].length)
+
+    for road_name, (mid_point, _) in road_midpoints.items():
+        folium.map.Marker(
+            [mid_point[1], mid_point[0]],
+            icon=folium.DivIcon(html=f"""<div style="font-size: 10px; color: black;">{road_name}</div>""")
+        ).add_to(m)
+
+    # Add nodes and edges from the simulated graph
+    add_nodes_and_edges_to_map(m, G, T, image_cache, highlight_nodes=highlight_nodes)
+
+    # Display the map in full width
+    folium_static(m, width=1400, height=800)
+    return m
+
+
+def display_simulated_graph(G, T, df, image_cache, highlight_nodes=None):
+    m_simulation = folium.Map(location=[df['Latitude'].mean(), df['Longitude'].mean()], zoom_start=15, tiles=None)
+
+    # Overlay street network
+    latitude, longitude = df['Latitude'].mean(), df['Longitude'].mean()
+    radius = 1000  # meters
+    G_street = ox.graph_from_point((latitude, longitude), dist=radius, network_type='drive')
+    nodes, edges = ox.graph_to_gdfs(G_street)
+    edges['name'] = edges['name'].apply(lambda x: ', '.join(x) if isinstance(x, list) else str(x))
+
+    colors = plt.colormaps['tab20'].colors
+    color_map = {}
+    road_midpoints = {}
+
+    for idx, row in edges.iterrows():
+        road_name = row.get('name', 'Unnamed Road')
+        if road_name not in color_map:
+            color_map[road_name] = random.choice(colors)
+        hex_color = to_hex(color_map[road_name])
+        color = hex_color
+        folium.PolyLine(
+            locations=[(point[1], point[0]) for point in row['geometry'].coords],
+            color=color,
+            weight=2
+        ).add_to(m_simulation)
+        if road_name != 'Unnamed Road':
+            if road_name not in road_midpoints or row['geometry'].length > road_midpoints[road_name][1]:
+                mid_point = row['geometry'].interpolate(0.5, normalized=True).coords[0]
+                road_midpoints[road_name] = (mid_point, row['geometry'].length)
+
+    for road_name, (mid_point, _) in road_midpoints.items():
+        folium.map.Marker(
+            [mid_point[1], mid_point[0]],
+            icon=folium.DivIcon(html=f"""<div style="font-size: 10px; color: black;">{road_name}</div>""")
+        ).add_to(m_simulation)
+
+    # Add nodes and edges from the simulated graph
+    add_nodes_and_edges_to_map(m_simulation, G, T, image_cache, highlight_nodes=highlight_nodes)
+
+    # Display the map in full width
+    folium_static(m_simulation, width=1400, height=800)
+    return m_simulation
+
+
+def main():
+    df = load_data('paddle_output_all.xlsx')
+    G = create_graph(df)
+    T = generate_mst(G)
+
+    st.title("From multi_videos to map: case of manhole")
+
+    image_cache = {}
+
+    map_type = st.selectbox("Choose map type", ["Real Map with Graph Overlay", "Simulated Graph"])
+
+    search_query = st.text_input("Search for address")
+
+    highlight_nodes = None
+    if search_query:
+        # Filter nodes that match the search query
+        search_query = search_query.lower()
+        matching_nodes = df[df['Address'].str.lower().str.contains(search_query)].index + 1
+        highlight_nodes = set(matching_nodes)
+
+    if map_type == "Real Map with Graph Overlay":
+        m = display_real_map_with_graph(G, T, df, image_cache, highlight_nodes)
+    elif map_type == "Simulated Graph":
+        m = display_simulated_graph(G, T, df, image_cache, highlight_nodes)
+
+
+if __name__ == "__main__":
+    main()

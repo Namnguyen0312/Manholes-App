@@ -8,3 +8,4 @@ osmnx~=1.9.4
 matplotlib~=3.9.2
 streamlit_folium~=0.22.0
 pillow~=10.4.0
+openpyxl

@@ -51,23 +51,23 @@ df = load_data(file_path)
 lon_lat_columns = ['Longitude', 'Latitude']
 node_lists = df[lon_lat_columns].values.tolist()
 
-@st.cache_resource
-def create_graph(df, radius=500):
-    G = nx.Graph()
-    for idx, row in df.iterrows():
-        node_id = idx + 1
-        G.add_node(node_id, pos=(row['Longitude'], row['Latitude']),
-                   filename=row['Filename'], folder=row['Folder'], address=row['Address'])
-
-    positions = np.radians(np.array([G.nodes[node]['pos'][::-1] for node in G.nodes()]))
-    tree = BallTree(positions)
-    adjacency_list = tree.query_radius(positions, r=radius / 6371000, return_distance=True)
-
-    for i, neighbors in enumerate(adjacency_list[0]):
-        for j, distance in zip(neighbors, adjacency_list[1][i]):
-            if i < j:
-                G.add_edge(i + 1, j + 1, weight=distance * 6371000)
-    return G
+# @st.cache_resource
+# def create_graph(df, radius=500):
+#     G = nx.Graph()
+#     for idx, row in df.iterrows():
+#         node_id = idx + 1
+#         G.add_node(node_id, pos=(row['Longitude'], row['Latitude']),
+#                    filename=row['Filename'], folder=row['Folder'], address=row['Address'])
+#
+#     positions = np.radians(np.array([G.nodes[node]['pos'][::-1] for node in G.nodes()]))
+#     tree = BallTree(positions)
+#     adjacency_list = tree.query_radius(positions, r=radius / 6371000, return_distance=True)
+#
+#     for i, neighbors in enumerate(adjacency_list[0]):
+#         for j, distance in zip(neighbors, adjacency_list[1][i]):
+#             if i < j:
+#                 G.add_edge(i + 1, j + 1, weight=distance * 6371000)
+#     return G
 
 # Function to calculate the center of the coordinates
 def calculate_center(node_lists):
@@ -89,14 +89,14 @@ def build_kdtree(G):
 @st.cache_resource
 def build_kdtree_and_graph(radius=2000):
     G_street = ox.graph_from_point((center_latitude, center_longitude), dist=radius, network_type='drive')
-    positions = np.radians(np.array([G_street.nodes[node]['pos'][::-1] for node in G.nodes()]))
-    tree = BallTree(positions)
-    adjacency_list = tree.query_radius(positions, r=radius / 6371000, return_distance=True)
-
-    for i, neighbors in enumerate(adjacency_list[0]):
-        for j, distance in zip(neighbors, adjacency_list[1][i]):
-            if i < j:
-                G_street.add_edge(i + 1, j + 1, weight=distance * 6371000)
+    # positions = np.radians(np.array([G_street.nodes[node]['pos'][::-1] for node in G.nodes()]))
+    # tree = BallTree(positions)
+    # adjacency_list = tree.query_radius(positions, r=radius / 6371000, return_distance=True)
+    #
+    # for i, neighbors in enumerate(adjacency_list[0]):
+    #     for j, distance in zip(neighbors, adjacency_list[1][i]):
+    #         if i < j:
+    #             G_street.add_edge(i + 1, j + 1, weight=distance * 6371000)
     kdtree, node_ids, coords = build_kdtree(G_street)
     return G_street, kdtree, node_ids, coords
 
@@ -675,177 +675,5 @@ def main():
             st.session_state.conversation = get_conversation_chain(vector_store)
 
 
-# def main():
-#     st.title("Manhole Network Map")
-#
-#     # Initialize session state variables if they don't exist
-#     if 'search_type' not in st.session_state:
-#         st.session_state.search_type = "Node ID"
-#     if 'manhole_type' not in st.session_state:
-#         st.session_state.manhole_type = None
-#     if 'selected_node_id' not in st.session_state:
-#         st.session_state.selected_node_id = None
-#     if 'search_radius' not in st.session_state:
-#         st.session_state.search_radius = None
-#     if 'search_input' not in st.session_state:
-#         st.session_state.search_input = None
-#     if "markers" not in st.session_state:
-#         st.session_state["markers"] = []
-#     if "search_active" not in st.session_state:
-#         st.session_state.search_active = False
-#     if "selected_node_info" not in st.session_state:
-#         st.session_state.selected_node_info = None
-#
-#     node_ids = df['node_id'].sort_values().tolist()
-#
-#     with st.sidebar:
-#         # Sidebar for search and node information
-#         st.header("Search and Visualization")
-#
-#         # Choose map type
-#         map_type = st.selectbox("Choose map type",
-#                                 ["Real Map with Graph Overlay", "Simulated Graph", "Node and Edge Only"])
-#         # Choose search type
-#         search_type = st.selectbox("Search Type", ["", "Node ID", "Street Name", "Manhole Type", "Radius"], index=0)
-#
-#         # Clear search input and parameters when changing search type
-#         if 'search_type' in st.session_state and st.session_state.search_type != search_type:
-#             st.session_state.manhole_type = None
-#             st.session_state.selected_node_id = None
-#             st.session_state.search_radius = None
-#
-#         st.session_state.search_type = search_type
-#
-#         # Based on search type, require different inputs
-#         if search_type == "Manhole Type":
-#             selected_manhole = st.selectbox("Select Manhole Type", list(class_name_map.values()))
-#             st.session_state.manhole_type = [key for key, value in class_name_map.items() if value == selected_manhole][
-#                 0]
-#         elif search_type == "Radius":
-#             st.session_state.selected_node_id = st.selectbox("Select a node as the center", node_ids)
-#             st.session_state.search_radius = st.slider("Select radius (meters)", min_value=100, max_value=5000,
-#                                                        value=1000, step=100)
-#         elif search_type == "Node ID" or search_type == "Street Name":
-#             st.session_state.search_input = st.text_input('Search Input')
-#         else:
-#             st.session_state.search_active = False
-#             search_type = ""
-#             st.session_state.manhole_type = None
-#             st.session_state.selected_node_id = None
-#             st.session_state.search_radius = None
-#
-#         search_button = False
-#         if search_type:
-#             search_button = st.button("Search")
-#
-#
-#
-#     # Display map and other default functionalities if search button hasn't been pressed
-#     st.write("### Map Visualization")
-#     with st.expander("Map Display"):
-#         if not search_button:
-#             # Display the default map
-#             if map_type == "Real Map with Graph Overlay":
-#                 folium_map = display_real_map_with_graph(G_street, mst, df, search_type)
-#             elif map_type == "Simulated Graph":
-#                 folium_map = display_simulated_graph(G_street, mst, df, search_type)
-#             elif map_type == "Node and Edge Only":
-#                 folium_map = display_node_edge_only(G_street, mst, df, search_type)
-#         else:
-#             # Perform search and display results if search is active
-#             if st.session_state.search_type == "Manhole Type" and not st.session_state.manhole_type:
-#                 st.warning("Please select a manhole type.")
-#             elif st.session_state.search_type == "Radius" and (
-#                     not st.session_state.selected_node_id or not st.session_state.search_radius):
-#                 st.warning("Please select both a node and a radius.")
-#             elif st.session_state.search_type in ["Node ID", "Street Name"] and not search_type:
-#                 st.warning(f"Please enter a valid {st.session_state.search_type}.")
-#             else:
-#                 highlight_nodes, address_info = search_nodes(
-#                     st.session_state.search_input if st.session_state.search_type != "Manhole Type" else None,
-#                     st.session_state.search_type, G_sampled, df, st.session_state.manhole_type,
-#                     selected_node_id=st.session_state.selected_node_id, search_radius=st.session_state.search_radius
-#                 )
-#
-#                 if address_info:
-#                     if 'error' in address_info:
-#                         st.write(address_info['error'])
-#                     else:
-#                         st.write(f"Address: {address_info['address']}")
-#                         st.write(f"Number of nodes: {address_info['node_count']}")
-#
-#                 # Display the map with highlighted nodes
-#                 st.write("### Highlighted Nodes")
-#                 if map_type == "Real Map with Graph Overlay":
-#                     folium_map = display_real_map_with_graph(G_street, mst, df, search_type,
-#                                                              highlight_nodes=highlight_nodes)
-#                 elif map_type == "Simulated Graph":
-#                     folium_map = display_simulated_graph(G_street, mst, df, search_type,
-#                                                          highlight_nodes=highlight_nodes)
-#                 elif map_type == "Node and Edge Only":
-#                     folium_map = display_node_edge_only(G_street, mst, df, search_type, highlight_nodes=highlight_nodes)
-#
-#         output = st_folium(folium_map, height=600, use_container_width=True, returned_objects=["last_object_clicked"])
-#
-#         # Check if a node was clicked
-#         if output and output.get("last_object_clicked"):
-#             if st.session_state.search_active:
-#                 st.warning("Please reset the search before clicking on nodes.")
-#             else:
-#                 clicked_location = output['last_object_clicked']
-#                 clicked_lat, clicked_lon = clicked_location['lat'], clicked_location['lng']
-#
-#                 # Find nearest node and display its info
-#                 nearest_node = find_node_by_lat_lon(df, clicked_lat, clicked_lon)
-#                 if nearest_node is not None and not nearest_node.empty:
-#                     # Format node details for display and save in session state
-#                     node_info = {
-#                         "node_id": nearest_node['node_id'],  # Ensure proper indexing
-#                         "lat": nearest_node['Latitude'],
-#                         "lon": nearest_node['Longitude'],
-#                         "address": nearest_node['Address'],
-#                         "manhole_type": class_name_map[nearest_node['Class']],
-#                         "image_path": nearest_node['Image_Path']
-#                     }
-#                     st.session_state.selected_node_info = node_info
-#
-#                     # Immediately update the display of the selected node info
-#                     st.subheader("Selected Node Information")
-#                     col1, col2 = st.columns(2)
-#
-#                     # Column 1: Node Information
-#                     with col1:
-#                         st.write(f"**Node ID:** {node_info['node_id']}")
-#                         st.write(f"**Latitude:** {node_info['lat']:.6f}")
-#                         st.write(f"**Longitude:** {node_info['lon']:.6f}")
-#                         st.write(f"**Address:** {node_info.get('address', 'N/A')}")
-#                         st.write(f"**Manhole Type:** {node_info.get('manhole_type', 'N/A')}")
-#
-#                     # Column 2: Image
-#                     with col2:
-#                         if os.path.isfile(node_info.get('image_path', 'N/A')):
-#                             image = load_image(node_info.get('image_path', 'N/A'))  # Cached image loading
-#                             st.image(image, caption=f"Image of Node {node_info['node_id']}",width=300)
-#                         else:
-#                             st.write("No image available for this node.")
-#
-#         else:
-#             st.write("No node selected.")
-#
-#         # Display a message if search is active
-#         if st.session_state.search_active:
-#             st.warning("To click on nodes, please reset your search first.")
-#
-#     with st.expander("Distance Calculation"):
-#         st.write("### Calculate Distance Between Nodes")
-#         node1 = st.selectbox("Select the first node", node_ids, key="node1")
-#         node2 = st.selectbox("Select the second node", node_ids, key="node2")
-#         distance = calculate_distance_between_nodes(
-#             df[df['node_id'] == node1].iloc[0]['Latitude'],
-#             df[df['node_id'] == node1].iloc[0]['Longitude'],
-#             df[df['node_id'] == node2].iloc[0]['Latitude'],
-#             df[df['node_id'] == node2].iloc[0]['Longitude']
-#         )
-#         st.write(f"Distance between Node {node1} and Node {node2}: {distance:.2f} meters")
 if __name__ == "__main__":
     main()

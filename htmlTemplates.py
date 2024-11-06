@@ -1,5 +1,11 @@
 css = '''
 <style>
+.chat-container {
+    display: flex;
+    flex-direction: column-reverse; /* Đảo ngược thứ tự hiển thị */
+    max-height: 500px; /* Giới hạn chiều cao khung chat */
+    overflow-y: auto; /* Thêm thanh cuộn */
+}
 .chat-message {
     padding: 1.5rem; border-radius: 0.5rem; margin-bottom: 1rem; display: flex
 }

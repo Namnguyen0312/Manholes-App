@@ -1,25 +1,13 @@
-import folium
-import streamlit as st
-from streamlit_folium import st_folium
+from PyPDF2 import PdfReader
+reader = PdfReader('pdf/BXD_06-2021-TT-BXD_30062021.pdf')
+meta = reader.metadata
+print("Total Pages: ", len(reader.pages))
+# All of the following could be None!
+print("Author: ", meta.author)
+print("Creator: ", meta.creator)
+print("Producer: ", meta.producer)
+print("Subject: ", meta.subject)
+print("Title: ", meta.title)
 
-form = st.form("location_form")
-set_latitude = form.number_input("Latitude")
-set_longitude = form.number_input("Longitude")
-submit_button = form.form_submit_button("Submit")
-
-# Initialize markers inside of session state
-if "markers" not in st.session_state:
-    st.session_state["markers"] = []
-
-location = [set_latitude, set_longitude]
-m = folium.Map(location=location, zoom_start=16)
-
-if submit_button:
-    st.session_state["markers"].append(folium.Marker(location=location))
-    st.write(location)
-
-fg = folium.FeatureGroup(name="Markers")
-for marker in st.session_state["markers"]:
-    fg.add_child(marker)
-st_data = st_folium(m, feature_group_to_add=fg, width=640, height=320)
-st.write(st_data)
+page = reader.pages[5]
+print(page.extract_text())

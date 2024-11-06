@@ -446,18 +446,18 @@ def get_conversation_chain(vector_store):
     return conversation_chain
 
 
-def handle_user_input(question):
-    response = st.session_state.conversation({'question': question})
-    st.session_state.chat_history = response['chat_history']
-
-    with st.container():
-        st.write('<div class="chat-container">', unsafe_allow_html=True)
-        for i, message in enumerate(reversed(st.session_state.chat_history)):
-            if i % 2 == 0:
-                st.write(user_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
-            else:
-                st.write(bot_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
-        st.write('</div>', unsafe_allow_html=True)
+# def handle_user_input(question):
+#     response = st.session_state.conversation({'question': question})
+#     st.session_state.chat_history = response['chat_history']
+#
+#     with st.container():
+#         st.write('<div class="chat-container">', unsafe_allow_html=True)
+#                 for i, message in enumerate(reversed(st.session_state.chat_history)):
+#             if i % 2 == 0:
+#                 st.write(user_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
+#             else:
+#                 st.write(bot_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
+#         st.write('</div>', unsafe_allow_html=True)
 
 
 def load_json_file(filename):
@@ -494,6 +494,7 @@ def main():
         st.session_state.search_active = False
     if "selected_node_info" not in st.session_state:
         st.session_state.selected_node_info = None
+
 
     node_ids = df['node_id'].sort_values().tolist()
 
@@ -655,24 +656,50 @@ def main():
 
     # Tab 2: Chatbot
     with tab2:
-        st.header('Chat with Your own PDFs :books:')
-        question = st.text_input("Ask anything to your PDF: ", )
 
-        if question:
-            handle_user_input(question)
+        raw_data = load_json_file('extracted_data.json')
 
-        if 'conversation' not in st.session_state:
-            raw_data = load_json_file('extracted_data.json')
+        # Create text chunks from PDF data
+        text_chunks = []
+        for pdf_name, pdf_text in raw_data.items():
+            chunks = get_chunk_text(pdf_text)
+            text_chunks.extend(chunks)
 
-            # Tạo text chunks từ dữ liệu PDF
-            text_chunks = []
-            for pdf_name, pdf_text in raw_data.items():
-                chunks = get_chunk_text(pdf_text)
-                text_chunks.extend(chunks)
+        # Create a Vector Store and Conversation Chain
+        vector_store = get_vector_store(text_chunks)
+        conversation_chain = get_conversation_chain(vector_store)
 
-            # Tạo Vector Store và Conversation Chain
-            vector_store = get_vector_store(text_chunks)
-            st.session_state.conversation = get_conversation_chain(vector_store)
+        # Handle the conversation input and output
+        messages = st.container(height=300)
+
+        # Check if user input is available
+        if prompt := st.chat_input("Say something"):
+
+            # Get the assistant's response
+            response = st.session_state.conversation({'question': prompt})
+
+            # Update the chat history
+            st.session_state.chat_history = response['chat_history']
+
+            # Print the entire chat history
+            for i, message in enumerate(st.session_state.chat_history):
+                if i % 2 == 0:
+                    messages.chat_message("user").write( message.content)
+
+                else:
+                    messages.chat_message("assistant").write( message.content)
+
+            # Display the last message from the assistant
+
+        # st.header('Chat with Your own PDFs :books:')
+        # question = st.text_input("Ask anything to your PDF: ", )
+        #
+        #
+        #
+        # if question:
+        #     handle_user_input(question)
+
+
 
 
 if __name__ == "__main__":

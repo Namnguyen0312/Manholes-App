@@ -11,15 +11,14 @@ import networkx as nx
 from sklearn.neighbors import KDTree, BallTree
 import osmnx as ox
 from PIL import Image
-from PyPDF2 import PdfReader
 from dotenv import load_dotenv
 from langchain.text_splitter import CharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings, HuggingFaceInstructEmbeddings
+from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import FAISS
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain.chat_models import ChatOpenAI
-from htmlTemplates import bot_template, user_template, css
+from htmlTemplates import css
 
 # Set page configuration to use the full width of the browser window
 st.set_page_config(layout="wide")
@@ -51,23 +50,6 @@ df = load_data(file_path)
 lon_lat_columns = ['Longitude', 'Latitude']
 node_lists = df[lon_lat_columns].values.tolist()
 
-# @st.cache_resource
-# def create_graph(df, radius=500):
-#     G = nx.Graph()
-#     for idx, row in df.iterrows():
-#         node_id = idx + 1
-#         G.add_node(node_id, pos=(row['Longitude'], row['Latitude']),
-#                    filename=row['Filename'], folder=row['Folder'], address=row['Address'])
-#
-#     positions = np.radians(np.array([G.nodes[node]['pos'][::-1] for node in G.nodes()]))
-#     tree = BallTree(positions)
-#     adjacency_list = tree.query_radius(positions, r=radius / 6371000, return_distance=True)
-#
-#     for i, neighbors in enumerate(adjacency_list[0]):
-#         for j, distance in zip(neighbors, adjacency_list[1][i]):
-#             if i < j:
-#                 G.add_edge(i + 1, j + 1, weight=distance * 6371000)
-#     return G
 
 # Function to calculate the center of the coordinates
 def calculate_center(node_lists):
@@ -89,14 +71,7 @@ def build_kdtree(G):
 @st.cache_resource
 def build_kdtree_and_graph(radius=2000):
     G_street = ox.graph_from_point((center_latitude, center_longitude), dist=radius, network_type='drive')
-    # positions = np.radians(np.array([G_street.nodes[node]['pos'][::-1] for node in G.nodes()]))
-    # tree = BallTree(positions)
-    # adjacency_list = tree.query_radius(positions, r=radius / 6371000, return_distance=True)
-    #
-    # for i, neighbors in enumerate(adjacency_list[0]):
-    #     for j, distance in zip(neighbors, adjacency_list[1][i]):
-    #         if i < j:
-    #             G_street.add_edge(i + 1, j + 1, weight=distance * 6371000)
+
     kdtree, node_ids, coords = build_kdtree(G_street)
     return G_street, kdtree, node_ids, coords
 
@@ -106,8 +81,6 @@ center_latitude, center_longitude = calculate_center(node_lists)
 
 # Build KDTree and Graph
 G_street, kdtree, node_ids, coords = build_kdtree_and_graph()
-
-kdtree, node_ids, coords = build_kdtree(G_street)
 
 # Find the closest nodes for each coordinate in node_lists
 closest_nodes = []
@@ -139,6 +112,7 @@ for i in range(len(closest_nodes)):
             if shortest_path_length <= k:
                 potential_edges.append((node_i, node_j, shortest_path_length))
 
+
 # Create a sampled graph with only the required edges
 G_sampled = nx.Graph()
 G_sampled.add_weighted_edges_from(potential_edges)
@@ -152,8 +126,28 @@ for index, row in df.iterrows():
                        file_path=row['Filename'],
                        address=row['Address'],
                        class_name=class_name_map.get(row['Class'], 'Unknown'))
+
+coordinates = df[['Latitude', 'Longitude']].values  # Giả sử dữ liệu tọa độ là 'Latitude' và 'Longitude'
+positions = np.radians(coordinates)
+tree = BallTree(positions)
+
+# Tìm 2 node gần nhất trong Ball Tree (k=3 vì node gần nhất là node này và 2 node gần nhất khác)
+adjacency_list = tree.query_radius(positions, r=500/6371000, return_distance=True)  # 'k=3' vì sẽ trả về node hiện tại và 2 node gần nhất khác
+
+node_ids = list(G_sampled.nodes)
+for i, neighbors in enumerate(adjacency_list[0]):
+    node_i = node_ids[i + 44]
+    print(node_i)
+    for j, distance in zip(neighbors, adjacency_list[1][i]):
+        node_j = node_ids[j + 44]
+        if node_i < node_j:
+            G_sampled.add_edge(node_i, node_j, weight=distance * 6371000)
+
+
+
 # Generate the Minimum Spanning Tree (MST)
 mst = nx.minimum_spanning_tree(G_sampled)
+
 
 # Hàm hiển thị bản đồ với mạng lưới
 def display_real_map_with_graph(G, mst, df, search_input, highlight_nodes=None):
@@ -167,9 +161,13 @@ def display_real_map_with_graph(G, mst, df, search_input, highlight_nodes=None):
 
     # Vẽ các cạnh MST
     for u, v, data in mst.edges(data=True):
-        path = nx.shortest_path(G, source=u, target=v, weight='length')
-        path_coords = [(G.nodes[p]['y'], G.nodes[p]['x']) for p in path]
-        folium.PolyLine(locations=path_coords, color='green', weight=8).add_to(m)
+        if u in G.nodes and v in G.nodes:
+            # Tìm đường đi ngắn nhất giữa u và v
+            path = nx.shortest_path(G, source=u, target=v, weight='length')
+            # Lấy tọa độ các node trong đường đi
+            path_coords = [(G.nodes[p]['y'], G.nodes[p]['x']) for p in path]
+            # Vẽ đường đi lên bản đồ
+            folium.PolyLine(locations=path_coords, color='green', weight=8).add_to(m)
 
     # Tạo danh sách marker tạm thời
     markers_info = []
@@ -203,6 +201,28 @@ def display_real_map_with_graph(G, mst, df, search_input, highlight_nodes=None):
             fill_color=marker['color']
         ).add_to(m)
 
+    for edge in mst.edges:
+        # Kiểm tra xem các node có tồn tại trong G hay không
+        if edge[0] in G_sampled.nodes and edge[1] in G_sampled.nodes:
+            pos1_lat = G_sampled.nodes[edge[0]].get('latitude')
+            pos1_lon = G_sampled.nodes[edge[0]].get('longitude')
+            pos2_lat = G_sampled.nodes[edge[1]].get('latitude')
+            pos2_lon = G_sampled.nodes[edge[1]].get('longitude')
+
+            # Nếu các node có tọa độ, vẽ đường nối
+            if pos1_lat is not None and pos1_lon is not None and pos2_lat is not None and pos2_lon is not None:
+                color = 'red' if highlight_nodes is None or (
+                        edge[0] in highlight_nodes and edge[1] in highlight_nodes) else 'lightgray'
+                folium.PolyLine(
+                    locations=[(pos1_lat, pos1_lon), (pos2_lat, pos2_lon)],
+                    color=color,
+                    weight=4
+                ).add_to(m)
+            else:
+                continue
+        else:
+            continue
+
     return m
 
 
@@ -229,16 +249,41 @@ def display_node_edge_only(G, T, df, search_input, highlight_nodes=None, ):
 
     # Draw MST edges without street network
     for u, v, data in T.edges(data=True):
-        path = nx.shortest_path(G, source=u, target=v, weight='length')
-        path_coords = [(G.nodes[p]['y'], G.nodes[p]['x']) for p in path]
-        folium.PolyLine(locations=path_coords, color='green', weight=8).add_to(m)
+        if u in G.nodes and v in G.nodes:
+            # Tìm đường đi ngắn nhất giữa u và v
+            path = nx.shortest_path(G, source=u, target=v, weight='length')
+            # Lấy tọa độ các node trong đường đi
+            path_coords = [(G.nodes[p]['y'], G.nodes[p]['x']) for p in path]
+            # Vẽ đường đi lên bản đồ
+            folium.PolyLine(locations=path_coords, color='green', weight=8).add_to(m)
+
+    for edge in mst.edges:
+        # Kiểm tra xem các node có tồn tại trong G hay không
+        if edge[0] in G_sampled.nodes and edge[1] in G_sampled.nodes:
+            pos1_lat = G_sampled.nodes[edge[0]].get('latitude')
+            pos1_lon = G_sampled.nodes[edge[0]].get('longitude')
+            pos2_lat = G_sampled.nodes[edge[1]].get('latitude')
+            pos2_lon = G_sampled.nodes[edge[1]].get('longitude')
+
+            # Nếu các node có tọa độ, vẽ đường nối
+            if pos1_lat is not None and pos1_lon is not None and pos2_lat is not None and pos2_lon is not None:
+                color = 'red' if highlight_nodes is None or (
+                        edge[0] in highlight_nodes and edge[1] in highlight_nodes) else 'lightgray'
+                folium.PolyLine(
+                    locations=[(pos1_lat, pos1_lon), (pos2_lat, pos2_lon)],
+                    color=color,
+                    weight=4
+                ).add_to(m)
+            else:
+                continue
+        else:
+            continue
 
     return m
 
 
 def display_simulated_graph(G, mst, df, search_input, highlight_nodes=None):
     m = folium.Map(location=[center_latitude, center_longitude], zoom_start=15, tiles=None, )
-    print(search_input)
     # Thêm mạng lưới đường phố vào bản đồ
     edges = ox.graph_to_gdfs(G, nodes=False, edges=True)
     for _, row in edges.iterrows():
@@ -247,9 +292,13 @@ def display_simulated_graph(G, mst, df, search_input, highlight_nodes=None):
 
     # Vẽ các cạnh MST
     for u, v, data in mst.edges(data=True):
-        path = nx.shortest_path(G, source=u, target=v, weight='length')
-        path_coords = [(G.nodes[p]['y'], G.nodes[p]['x']) for p in path]
-        folium.PolyLine(locations=path_coords, color='green', weight=8).add_to(m)
+        if u in G.nodes and v in G.nodes:
+            # Tìm đường đi ngắn nhất giữa u và v
+            path = nx.shortest_path(G, source=u, target=v, weight='length')
+            # Lấy tọa độ các node trong đường đi
+            path_coords = [(G.nodes[p]['y'], G.nodes[p]['x']) for p in path]
+            # Vẽ đường đi lên bản đồ
+            folium.PolyLine(locations=path_coords, color='green', weight=8).add_to(m)
 
     for i, (lon, lat) in enumerate(node_lists):
         manhole_class = df.loc[i, 'Class']
@@ -266,6 +315,28 @@ def display_simulated_graph(G, mst, df, search_input, highlight_nodes=None):
             location=(lat, lon),
             radius=marker_size, color=marker_color, fill=True, fill_color=marker_color
         ).add_to(m)
+
+    for edge in mst.edges:
+        # Kiểm tra xem các node có tồn tại trong G hay không
+        if edge[0] in G_sampled.nodes and edge[1] in G_sampled.nodes:
+            pos1_lat = G_sampled.nodes[edge[0]].get('latitude')
+            pos1_lon = G_sampled.nodes[edge[0]].get('longitude')
+            pos2_lat = G_sampled.nodes[edge[1]].get('latitude')
+            pos2_lon = G_sampled.nodes[edge[1]].get('longitude')
+
+            # Nếu các node có tọa độ, vẽ đường nối
+            if pos1_lat is not None and pos1_lon is not None and pos2_lat is not None and pos2_lon is not None:
+                color = 'red' if highlight_nodes is None or (
+                        edge[0] in highlight_nodes and edge[1] in highlight_nodes) else 'lightgray'
+                folium.PolyLine(
+                    locations=[(pos1_lat, pos1_lon), (pos2_lat, pos2_lon)],
+                    color=color,
+                    weight=4
+                ).add_to(m)
+            else:
+                continue
+        else:
+            continue
 
     return m
 
@@ -495,7 +566,6 @@ def main():
     if "selected_node_info" not in st.session_state:
         st.session_state.selected_node_info = None
 
-
     node_ids = df['node_id'].sort_values().tolist()
 
     # Create tabs
@@ -525,8 +595,8 @@ def main():
             if search_type == "Manhole Type":
                 selected_manhole = st.selectbox("Select Manhole Type", list(class_name_map.values()))
                 st.session_state.manhole_type = \
-                [key for key, value in class_name_map.items() if value == selected_manhole][
-                    0]
+                    [key for key, value in class_name_map.items() if value == selected_manhole][
+                        0]
             elif search_type == "Radius":
                 st.session_state.selected_node_id = st.selectbox("Select a node as the center", node_ids)
                 st.session_state.search_radius = st.slider("Select radius (meters)", min_value=100, max_value=5000,
@@ -684,22 +754,12 @@ def main():
             # Print the entire chat history
             for i, message in enumerate(st.session_state.chat_history):
                 if i % 2 == 0:
-                    messages.chat_message("user").write( message.content)
+                    messages.chat_message("user").write(message.content)
 
                 else:
-                    messages.chat_message("assistant").write( message.content)
+                    messages.chat_message("assistant").write(message.content)
 
             # Display the last message from the assistant
-
-        # st.header('Chat with Your own PDFs :books:')
-        # question = st.text_input("Ask anything to your PDF: ", )
-        #
-        #
-        #
-        # if question:
-        #     handle_user_input(question)
-
-
 
 
 if __name__ == "__main__":

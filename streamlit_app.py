@@ -1,11 +1,13 @@
 import json
 import math
 import os
-
+import re
+from geopy.geocoders import OpenCage
 import numpy as np
 import pandas as pd
 import streamlit as st
 import folium
+from paddleocr import PaddleOCR
 from streamlit_folium import st_folium
 import networkx as nx
 from sklearn.neighbors import KDTree, BallTree
@@ -18,8 +20,8 @@ from langchain.vectorstores import FAISS
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain.chat_models import ChatOpenAI
-from htmlTemplates import css
-
+from ultralytics import YOLOv10
+from keras.src.saving import load_model
 # Set page configuration to use the full width of the browser window
 st.set_page_config(layout="wide")
 
@@ -37,7 +39,20 @@ class_name_map = {
     'sqr': 'Square Manhole',
 }
 
+HOME = "utils"
+YOLO_MODEL_PATH = f"{HOME}/best.pt"
+CLASSIFICATION_MODEL_PATH = f"{HOME}/saved_model_inceptionv3.h5"
 
+# Tải mô hình YOLO và mô hình phân loại
+yolo_model = YOLOv10(YOLO_MODEL_PATH)
+classification_model = load_model(CLASSIFICATION_MODEL_PATH)
+
+class_mapping = {
+    0: "Double Rectangle Manhole",
+    1: "Rectangle Manhole",
+    2: "Round Square Manhole",
+    3: "Square Manhole",
+}
 @st.cache_data
 def load_data(file_path):
     return pd.read_excel(file_path)
@@ -89,7 +104,6 @@ for lon, lat in node_lists:
     closest_node_id = node_ids[idx[0][0]]
     closest_nodes.append(closest_node_id)
 
-
 @st.cache_resource
 def compute_shortest_paths(_G):
     return dict(nx.all_pairs_dijkstra_path_length(_G, weight='length'))
@@ -112,7 +126,6 @@ for i in range(len(closest_nodes)):
             if shortest_path_length <= k:
                 potential_edges.append((node_i, node_j, shortest_path_length))
 
-
 # Create a sampled graph with only the required edges
 G_sampled = nx.Graph()
 G_sampled.add_weighted_edges_from(potential_edges)
@@ -132,18 +145,16 @@ positions = np.radians(coordinates)
 tree = BallTree(positions)
 
 # Tìm 2 node gần nhất trong Ball Tree (k=3 vì node gần nhất là node này và 2 node gần nhất khác)
-adjacency_list = tree.query_radius(positions, r=500/6371000, return_distance=True)  # 'k=3' vì sẽ trả về node hiện tại và 2 node gần nhất khác
+adjacency_list = tree.query_radius(positions, r=500 / 6371000,
+                                   return_distance=True)  # 'k=3' vì sẽ trả về node hiện tại và 2 node gần nhất khác
 
 node_ids = list(G_sampled.nodes)
 for i, neighbors in enumerate(adjacency_list[0]):
     node_i = node_ids[i + 44]
-    print(node_i)
     for j, distance in zip(neighbors, adjacency_list[1][i]):
         node_j = node_ids[j + 44]
         if node_i < node_j:
             G_sampled.add_edge(node_i, node_j, weight=distance * 6371000)
-
-
 
 # Generate the Minimum Spanning Tree (MST)
 mst = nx.minimum_spanning_tree(G_sampled)
@@ -516,32 +527,144 @@ def get_conversation_chain(vector_store):
     )
     return conversation_chain
 
-
-# def handle_user_input(question):
-#     response = st.session_state.conversation({'question': question})
-#     st.session_state.chat_history = response['chat_history']
-#
-#     with st.container():
-#         st.write('<div class="chat-container">', unsafe_allow_html=True)
-#                 for i, message in enumerate(reversed(st.session_state.chat_history)):
-#             if i % 2 == 0:
-#                 st.write(user_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
-#             else:
-#                 st.write(bot_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
-#         st.write('</div>', unsafe_allow_html=True)
-
-
 def load_json_file(filename):
     with open(filename, 'r', encoding='utf-8') as file:
         data = json.load(file)  # Load JSON data into a variable
     return data
 
+def initialize_ocr():
+    """Khởi tạo PaddleOCR."""
+    return PaddleOCR(use_angle_cls=True, lang='vi')
+
+# Hàm lấy địa chỉ từ tọa độ
+def get_address_from_coordinates(latitude, longitude, api_key):
+    """Trả về địa chỉ từ tọa độ (latitude, longitude)."""
+    geolocator = OpenCage(api_key)
+    location = geolocator.reverse((latitude, longitude), language='vi')
+    return location.address if location else None
+
+# Hàm xử lý OCR trên một hình ảnh
+def process_image(image_file, ocr, api_key):
+    """Thực hiện OCR trên hình ảnh tải lên và trả về thông tin tọa độ."""
+    results = []
+
+    # Đọc hình ảnh từ buffer và chuyển thành numpy array
+    image = Image.open(image_file)  # Mở từ Streamlit file uploader
+    image_np = np.array(image)     # Chuyển thành mảng numpy
+    image_pil = Image.fromarray(image_np)
+
+    # Thực hiện OCR trực tiếp trên numpy array
+    result = ocr.ocr(image_np, cls=True)
+
+    latitude, longitude = None, None
+    address = None
+
+    for line in result[0]:
+        text = line[1][0]
+
+        # Tìm kiếm giá trị latitude
+        lat_match = re.search(r"Lat\.?\s*([0-9.]+)[°\s]*", text, re.IGNORECASE)
+        if lat_match:
+            latitude = float(lat_match.group(1))
+
+        # Tìm kiếm giá trị longitude
+        long_match = re.search(r"Long\.?\s*([0-9.]+)[°\s]*", text, re.IGNORECASE)
+        if long_match:
+            longitude = float(long_match.group(1))
+
+        # Nếu tìm được cả latitude và longitude
+        if latitude is not None and longitude is not None:
+            address = get_address_from_coordinates(latitude, longitude, api_key)
+
+    # Thực hiện phát hiện đối tượng bằng YOLO
+    detections = yolo_model(source=image_pil, conf=0.25)[0]
+
+    # Truy cập các bounding box từ đối tượng detections.boxes
+    for i, box in enumerate(detections.boxes):
+        class_id = box.cls[0].item()  # Lấy class ID từ tọa độ
+        cords = box.xyxy[0].tolist()
+        cords = [round(x) for x in cords]
+        x1, y1, x2, y2 = map(int, cords)
+
+        # Cắt ảnh từ bounding box
+        cropped_img = image_pil.crop((x1, y1, x2, y2))
+        cropped_img_array = np.array(cropped_img)
+
+        # Phân loại hình ảnh đã cắt
+        class_name, confidence = classify_image(cropped_img_array, classification_model)
+
+        # Lưu tất cả thông tin vào một đối tượng
+        results.append({
+            "Filename": os.path.basename(image_file),
+            "Latitude": latitude,
+            "Longitude": longitude,
+            "Address": address,
+            "Class_Name": class_name,
+        })
+
+    return results
+
+
+
+def classify_image(image_array, model):
+    """Dự đoán lớp của một hình ảnh."""
+    # Resize hình ảnh thành đầu vào của mô hình (224x224)
+    resized_image = np.array(Image.fromarray(image_array).resize((224, 224))) / 255.0
+
+    # Đảm bảo hình ảnh có 3 kênh (RGB)
+    if resized_image.shape[-1] != 3:
+        resized_image = np.stack((resized_image,) * 3, axis=-1)
+
+    # Thêm chiều batch
+    resized_image = resized_image[np.newaxis, ...]
+    print("Shape before resize:", image_array.shape)
+    print("Shape after resize:", resized_image.shape)
+    # Dự đoán lớp
+    prediction = model.predict(resized_image)
+    class_index = np.argmax(prediction)
+    confidence = np.max(prediction)
+
+    return class_mapping.get(class_index, "Unknown"), confidence
+
+# Hàm xử lý toàn bộ các hình ảnh
+def process_uploaded_files(uploaded_files, ocr, api_key):
+    """Xử lý toàn bộ các file được upload."""
+    all_results = []
+    for uploaded_file in uploaded_files:
+        st.image(uploaded_file, caption=f"Processing: {uploaded_file.name}", use_column_width=True)
+
+        # Lưu file tạm thời từ Streamlit
+        with open(uploaded_file.name, "wb") as temp_file:
+            temp_file.write(uploaded_file.getbuffer())
+
+        # Gọi hàm xử lý và phân loại
+        results = process_image(temp_file.name, ocr, api_key)
+        all_results.extend(results)
+
+    return all_results
+
+# Hàm tạo và tải về file Excel
+def generate_download_button(results, output_file="ocr_results.xlsx"):
+    """Tạo DataFrame và nút tải về file Excel."""
+    if results:
+        df = pd.DataFrame(results)
+        st.dataframe(df)
+        df.to_excel(output_file, index=False, engine='openpyxl')
+
+        # Nút tải file Excel
+        with open(output_file, "rb") as f:
+            st.download_button(
+                label="Download Excel file",
+                data=f,
+                file_name=output_file,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    else:
+        st.warning("No geographic information found in uploaded images.")
+
 
 def main():
     load_dotenv()
-
-    # Set page configuration at the top
-    st.write(css, unsafe_allow_html=True)
 
     if "conversation" not in st.session_state:
         st.session_state.conversation = None
@@ -568,8 +691,12 @@ def main():
 
     node_ids = df['node_id'].sort_values().tolist()
 
+    st.title("AquaNetCT")
+
     # Create tabs
-    tab1, tab2 = st.tabs(["Graph Interaction", "Chatbot"])
+    tab1, tab2, tab3 = st.tabs(["Graph Interaction", "Chatbot", "Detect Object"])
+
+
 
     # Tab 1: Graph Interaction
     with tab1:
@@ -735,10 +862,6 @@ def main():
             chunks = get_chunk_text(pdf_text)
             text_chunks.extend(chunks)
 
-        # Create a Vector Store and Conversation Chain
-        vector_store = get_vector_store(text_chunks)
-        conversation_chain = get_conversation_chain(vector_store)
-
         # Handle the conversation input and output
         messages = st.container(height=300)
 
@@ -758,9 +881,21 @@ def main():
 
                 else:
                     messages.chat_message("assistant").write(message.content)
+    # Tab 3: Create file
+    with tab3:
+        API_KEY = os.getenv('OPENCAGE_API_KEY')
+        st.title("OCR Location Extractor")
+        st.write("Upload images to extract geographic information and save results to an Excel file.")
 
-            # Display the last message from the assistant
+        uploaded_files = st.file_uploader(
+            "Upload Images", accept_multiple_files=True, type=["png", "jpg", "jpeg"]
+        )
 
+        if uploaded_files:
+            ocr = initialize_ocr()
+            results = process_uploaded_files(uploaded_files, ocr, API_KEY)
+            st.success("Processing complete.")
+            generate_download_button(results)
 
 if __name__ == "__main__":
     main()
